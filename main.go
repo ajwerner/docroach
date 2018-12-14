@@ -13,6 +13,7 @@ import (
 func main() {
 	pgurl := flag.String("pgurl", "postgresql://root@localhost:26257/?sslmode=disable", "url to database")
 	listenAddr := flag.String("addr", ":27017", "address to listen on")
+	flag.Parse()
 	db, err := sql.Open("postgres", *pgurl)
 	if err != nil {
 		log.Fatal("error connecting to the database: ", err)

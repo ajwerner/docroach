@@ -1,5 +1,4 @@
-// Package server implements the MongoDB wire protocol parsing
-//
+// Package server attempts to implement the mongodb database TCP server.
 package server
 
 import (
@@ -16,8 +15,12 @@ import (
 	"gopkg.in/mgo.v2/bson"
 )
 
+// TODO(ajwerner): lazily create missing collection tables so we don't have to do multiple transactions
+// TODO(ajwerner): use a computed column for the primary key
 // TODO(ajwerner): reasonable error responses.
+// TODO(ajwerner): make comments more serious and professional :p
 
+// Server attempts to implement a mongo server.
 type Server struct {
 	addr string
 	db   *sql.DB
@@ -110,6 +113,14 @@ func (v *visitor) VisitIsMaster(
 		LogicalSessionTimeoutMinutes: 30,
 		MaxBsonObjectSize:            1 << 20,
 		MaxMessageSize:               1 << 24,
+	}, nil
+}
+
+func (v *visitor) VisitDelete(
+	ctx context.Context, c *commands.Delete,
+) (*commands.DeleteResponse, error) {
+	return &commands.DeleteResponse{
+		// TODO(ajwerner): this
 	}, nil
 }
 

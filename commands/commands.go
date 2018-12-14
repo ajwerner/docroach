@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/ajwerner/docroach/protocol"
@@ -14,30 +15,49 @@ import (
 ////////////////////////////////////////////////////////////////////////////////
 
 type Visitor interface {
+
+	// ---------- Query and Write Operations Commands ----------
+
+	VisitDelete(context.Context, *Delete) (*DeleteResponse, error)
+	VisitFind(context.Context, *Find) (*FindResponse, error)
+	// VisitFindAndModify(context.Context, *FindAndModify) (*FindAndModifyResponse, error)
+	// VisitGetLastError(context.Context, *GetLastError) (*GetLastErrorResponse, error)
+
+	VisitInsert(context.Context, *Insert) (*InsertResponse, error)
+
+	// ---------- Admin Commands ----------
+
 	VisitWhatsMyUri(context.Context, *WhatsMyUri) (*WhatsMyUriResponse, error)
 	VisitBuildInfo(context.Context, *BuildInfo) (*BuildInfoResponse, error)
 	VisitGetLog(context.Context, *GetLog) (*GetLogResponse, error)
 	VisitIsMaster(context.Context, *IsMaster) (*IsMasterResponse, error)
 	VisitReplSetGetStatus(context.Context, *ReplSetGetStatus) (*ErrorResponse, error)
-	VisitFind(context.Context, *Find) (*FindResponse, error)
-	VisitInsert(context.Context, *Insert) (*InsertResponse, error)
 }
 
 var commandNameToObject = map[string]func() Command{
+	"delete": func() Command { return new(Delete) },
+	"find":   func() Command { return new(Find) },
+	"insert": func() Command { return new(Insert) },
+
 	"isMaster":         func() Command { return new(IsMaster) },
-	"whatsmyuri":       func() Command { return new(WhatsMyUri) },
-	"buildinfo":        func() Command { return new(BuildInfo) },
+	"whatsMyUri":       func() Command { return new(WhatsMyUri) },
 	"buildInfo":        func() Command { return new(BuildInfo) },
 	"getLog":           func() Command { return new(GetLog) },
 	"replSetGetStatus": func() Command { return new(ReplSetGetStatus) },
-	"find":             func() Command { return new(Find) },
-	"insert":           func() Command { return new(Insert) },
+}
+
+func init() {
+	for n, f := range commandNameToObject {
+		commandNameToObject[strings.ToLower(n)] = f
+	}
 }
 
 func NewCommand(op protocol.Op) (Command, error) {
 	switch op := op.(type) {
 	case *protocol.MsgOp:
-		// TODO: deal with document stream sections better
+		// TODO(ajwerner): deal with document stream sections better
+		// right now we assume there's at most one documents section and
+		// at most one body section. No clue where this is formalized.
 		var bodySection *protocol.Section
 		var documentsSection *protocol.Section
 		for i, s := range op.Sections {
@@ -326,11 +346,33 @@ func (r *FindResponse) ToOp(from protocol.Op) (protocol.Op, error) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Delete
+////////////////////////////////////////////////////////////////////////////////
+
+type Delete struct {
+	DB         string `json:"$db" bson:"$db"`
+	Collection string `json:"find" bson:"find"`
+}
+
+func (c *Delete) Visit(ctx context.Context, v Visitor) (Response, error) {
+	return v.VisitDelete(ctx, c)
+}
+
+type DeleteResponse struct {
+}
+
+func (r *DeleteResponse) ToOp(from protocol.Op) (protocol.Op, error) {
+	return simpleToOp(from, r)
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Errors
 ////////////////////////////////////////////////////////////////////////////////
 
 //go:generate stringer --type ErrorCode
 
+// ErrorCode represents a mongo error code.
+//
 type ErrorCode int
 
 // ErrorCodes are being added as needed.

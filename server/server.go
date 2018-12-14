@@ -3,7 +3,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/ajwerner/docroach/commands"
 	"github.com/ajwerner/docroach/protocol"
+	"github.com/golang/glog"
+	"github.com/jackc/pgx"
 	"gopkg.in/mgo.v2/bson"
 )
 
@@ -22,34 +23,43 @@ import (
 
 // Server attempts to implement a mongo server.
 type Server struct {
-	addr string
-	db   *sql.DB
+	addr          string
+	dbConnections *pgx.ConnPool
 }
 
-func New(addr string, db *sql.DB) *Server {
-	return &Server{addr: addr, db: db}
+func New(addr string, dbConnections *pgx.ConnPool) *Server {
+	return &Server{
+		addr:          addr,
+		dbConnections: dbConnections,
+	}
 }
 
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		// handle error
-		panic(err)
+		return err
 	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			panic(err)
-			// handle error
+			return err
 		}
 		go s.handleConnection(conn)
 	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	glog.Infof("client connected %v", conn.RemoteAddr())
 	ctx := context.Background()
 	defer conn.Close()
-	v := &visitor{conn: conn, s: s}
+	defer glog.Infof("client disconnected %v", conn.RemoteAddr())
+	db, err := s.dbConnections.Acquire()
+	if err != nil {
+		// TODO(ajwerner): Tell the client about the error (something internal?).
+		return
+	}
+	defer s.dbConnections.Release(db)
+	v := newVisitor(conn.RemoteAddr(), db)
 	opDecoder := protocol.NewDecoder(conn)
 	encoder := protocol.NewEncoder(conn)
 	for {
@@ -59,36 +69,46 @@ func (s *Server) handleConnection(conn net.Conn) {
 		case io.EOF:
 			return
 		default:
-			panic(err)
+			glog.Infof("error decoding client op: %v", err)
+			return
 		}
 		c, err := commands.NewCommand(op)
 		if err != nil {
-			panic(err)
+			glog.Errorf("failed to parse command from op: %v", err)
+			return
 		}
+		// TODO(ajwerner): Give requests some sort of ID.
+		// Maybe opentracing and context and even cockroach/util/log and its
+		// contextual logging.
+		glog.V(2).Infof("received command: %#v", c)
 		resp, err := c.Visit(ctx, v)
 		if err != nil {
-			panic(err)
+			glog.Errorf("failed to visit command %#v: %v", c, err)
+			return
 		}
+		glog.V(2).Infof("sending response: %#v, err", c, err)
 		respOp, err := resp.ToOp(op)
 		if err != nil {
-			panic(err)
+			glog.Errorf("failed to encode response: %v", err)
+			return
 		}
 		if err := encoder.Encode(respOp); err != nil {
-			panic(err)
+			glog.Errorf("failed to write op: %v", err)
+			return
 		}
 	}
 }
 
-// The first pass on this library is going to use high level abstractions to unmarshal
-// and marshall data.
-
 type visitor struct {
-	conn net.Conn
-	s    *Server
+	remoteAddr net.Addr
+	db         *pgx.Conn
 }
 
-func NewConnection(conn net.Conn) commands.Visitor {
-	return &visitor{conn: conn}
+func newVisitor(remoteAddr net.Addr, db *pgx.Conn) *visitor {
+	return &visitor{
+		remoteAddr: remoteAddr,
+		db:         db,
+	}
 }
 
 var _ commands.Visitor = (*visitor)(nil)
@@ -119,8 +139,10 @@ func (v *visitor) VisitIsMaster(
 func (v *visitor) VisitDelete(
 	ctx context.Context, c *commands.Delete,
 ) (*commands.DeleteResponse, error) {
+	// TODO(ajwerner): this
 	return &commands.DeleteResponse{
-		// TODO(ajwerner): this
+		N:  0,
+		Ok: true,
 	}, nil
 }
 
@@ -148,7 +170,7 @@ func (v *visitor) VisitWhatsMyUri(
 	ctx context.Context, c *commands.WhatsMyUri,
 ) (*commands.WhatsMyUriResponse, error) {
 	return &commands.WhatsMyUriResponse{
-		You: v.conn.RemoteAddr().String(),
+		You: v.remoteAddr.String(),
 		Ok:  true,
 	}, nil
 }
@@ -161,7 +183,7 @@ func (v *visitor) VisitReplSetGetStatus(
 }
 
 func (v *visitor) VisitFind(ctx context.Context, c *commands.Find) (*commands.FindResponse, error) {
-	tx, err := v.s.db.BeginTx(ctx, nil)
+	tx, err := v.db.Begin()
 	defer func() {
 		if err == nil {
 			err = tx.Commit()
@@ -191,7 +213,7 @@ func (v *visitor) VisitFind(ctx context.Context, c *commands.Find) (*commands.Fi
 func (v *visitor) VisitInsert(
 	ctx context.Context, c *commands.Insert,
 ) (*commands.InsertResponse, error) {
-	tx, err := v.s.db.BeginTx(ctx, nil)
+	tx, err := v.db.Begin()
 	defer func() {
 		if err == nil {
 			err = tx.Commit()

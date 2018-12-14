@@ -349,9 +349,26 @@ func (r *FindResponse) ToOp(from protocol.Op) (protocol.Op, error) {
 // Delete
 ////////////////////////////////////////////////////////////////////////////////
 
+type Query map[string]interface{}
+
+// TODO(ajwerner): implement this
+type CollationDocument struct {
+}
+
+type Deletion struct {
+	Q         Query             `json:"q" bson:"q"`
+	Limit     int               `json:"limit" bson:"limit"`
+	Collation CollationDocument `json:"collation" bson:"collation"`
+}
+
 type Delete struct {
-	DB         string `json:"$db" bson:"$db"`
-	Collection string `json:"find" bson:"find"`
+	DB         string        `json:"$db" bson:"$db"`
+	Collection string        `json:"delete" bson:"delete"`
+	Deletes    []interface{} `json:"deletes" bson:"deletes"`
+
+	// TODO(ajwerner): consider caring about "ordered"
+	// TODO(ajwerner): consider caring about "lsid"
+
 }
 
 func (c *Delete) Visit(ctx context.Context, v Visitor) (Response, error) {
@@ -359,6 +376,8 @@ func (c *Delete) Visit(ctx context.Context, v Visitor) (Response, error) {
 }
 
 type DeleteResponse struct {
+	N  int  `json:"n" bson:"n"`
+	Ok bool `json:"ok" bson:"ok"`
 }
 
 func (r *DeleteResponse) ToOp(from protocol.Op) (protocol.Op, error) {

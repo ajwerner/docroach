@@ -1,24 +1,32 @@
 package main
 
 import (
-	"database/sql"
 	"flag"
-	"fmt"
 	"log"
 
 	"github.com/ajwerner/docroach/server"
-	_ "github.com/lib/pq"
+	"github.com/golang/glog"
+	"github.com/jackc/pgx"
 )
 
 func main() {
+	// TODO(ajwerner): Better and more flags.
 	pgurl := flag.String("pgurl", "postgresql://root@localhost:26257/?sslmode=disable", "url to database")
 	listenAddr := flag.String("addr", ":27017", "address to listen on")
 	flag.Parse()
-	db, err := sql.Open("postgres", *pgurl)
+
+	// TODO(ajwerner): Provide a more flexible/thoughful conn config.
+	dbConfig, err := pgx.ParseConnectionString(*pgurl)
 	if err != nil {
-		log.Fatal("error connecting to the database: ", err)
+		glog.Fatalf("error parsing connection string %v: %v", *pgurl, err)
 	}
-	fmt.Printf("Listening on %v", *listenAddr)
-	s := server.New(*listenAddr, db)
-	log.Fatal("failed to run server: ", s.ListenAndServe())
+	dbConns, err := pgx.NewConnPool(pgx.ConnPoolConfig{ConnConfig: dbConfig})
+	if err != nil {
+		glog.Fatalf("failed to connect to database (%s): %v", *pgurl, err)
+	}
+	glog.Infof("Listening on %v", *listenAddr)
+	s := server.New(*listenAddr, dbConns)
+	if err := s.ListenAndServe(); err != nil {
+		log.Fatal("failed to run server: ", err)
+	}
 }

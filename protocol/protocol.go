@@ -184,7 +184,7 @@ struct OP_QUERY {
 type QueryOp struct {
 	op
 	Flags                uint32
-	Collection           string
+	FullCollection       string
 	NumberToSkip         uint32
 	NumberToReturn       uint32
 	Query                Document
@@ -257,7 +257,7 @@ func parseQueryOp(data []byte) (*QueryOp, error) {
 	return &QueryOp{
 		op:                   data,
 		Flags:                le.Uint32(data[headerSize:]),
-		Collection:           collection,
+		FullCollection:       collection,
 		NumberToSkip:         le.Uint32(data[toSkipOffset:]),
 		NumberToReturn:       le.Uint32(data[toReturnOffset:]),
 		Query:                query,

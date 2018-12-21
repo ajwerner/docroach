@@ -22,7 +22,7 @@ type Visitor interface {
 	VisitFind(context.Context, *Find) (*FindResponse, error)
 	// VisitFindAndModify(context.Context, *FindAndModify) (*FindAndModifyResponse, error)
 	// VisitGetLastError(context.Context, *GetLastError) (*GetLastErrorResponse, error)
-
+	VisitUpdate(context.Context, *Update) (*UpdateResponse, error)
 	VisitInsert(context.Context, *Insert) (*InsertResponse, error)
 
 	// ---------- Admin Commands ----------
@@ -38,6 +38,7 @@ var commandNameToObject = map[string]func() Command{
 	"delete": func() Command { return new(Delete) },
 	"find":   func() Command { return new(Find) },
 	"insert": func() Command { return new(Insert) },
+	"update": func() Command { return new(Update) },
 
 	"isMaster":         func() Command { return new(IsMaster) },
 	"whatsMyUri":       func() Command { return new(WhatsMyUri) },
@@ -70,7 +71,7 @@ func NewCommand(op protocol.Op) (Command, error) {
 		if bodySection == nil {
 			return nil, fmt.Errorf("failed to find a body section")
 		}
-		c, err := documentToCommand(bodySection.Document)
+		c, err := documentToCommand("", bodySection.Document)
 		if err != nil {
 			return nil, err
 		}
@@ -91,13 +92,21 @@ func NewCommand(op protocol.Op) (Command, error) {
 		}
 		return c, nil
 	case *protocol.QueryOp:
-		return documentToCommand(op.Query)
+		return documentToCommand(op.FullCollection, op.Query)
 	default:
 		return nil, fmt.Errorf("invalid op type %T", op)
 	}
 }
 
-func documentToCommand(d protocol.Document) (Command, error) {
+func documentToCommand(fullCollectionName string, d protocol.Document) (Command, error) {
+	var db string
+	if fullCollectionName != "" {
+		dotIndex := strings.Index(fullCollectionName, ".")
+		if dotIndex == -1 {
+			return nil, fmt.Errorf("malformed full collection name %q", fullCollectionName)
+		}
+		db = fullCollectionName[:dotIndex]
+	}
 	var raw bson.RawD
 	if err := bson.Unmarshal(d, &raw); err != nil {
 		return nil, err
@@ -113,7 +122,14 @@ func documentToCommand(d protocol.Document) (Command, error) {
 	if err := bson.Unmarshal(d, c); err != nil {
 		return nil, err
 	}
+	if c, ok := c.(DBSetter); db != "" && ok {
+		c.SetDB(db)
+	}
 	return c, nil
+}
+
+type DBSetter interface {
+	SetDB(db string)
 }
 
 type Command interface {
@@ -303,6 +319,10 @@ type Insert struct {
 	Documents     []map[string]interface{} `json:"documents" bson:"documents"`
 }
 
+func (c *Insert) SetDB(db string) {
+	c.DB = db
+}
+
 func (c *Insert) Visit(ctx context.Context, v Visitor) (Response, error) {
 	return v.VisitInsert(ctx, c)
 }
@@ -321,8 +341,14 @@ func (r *InsertResponse) ToOp(from protocol.Op) (protocol.Op, error) {
 ////////////////////////////////////////////////////////////////////////////////
 
 type Find struct {
-	DB         string `json:"$db" bson:"$db"`
-	Collection string `json:"find" bson:"find"`
+	DB         string                 `json:"$db" bson:"$db"`
+	Collection string                 `json:"find" bson:"find"`
+	Filter     map[string]interface{} `json:"filter" bson:"filter"`
+	Projection map[string]interface{} `json:"projection" bson:"projection"`
+}
+
+func (c *Find) SetDB(db string) {
+	c.DB = db
 }
 
 func (c *Find) Visit(ctx context.Context, v Visitor) (Response, error) {
@@ -330,15 +356,18 @@ func (c *Find) Visit(ctx context.Context, v Visitor) (Response, error) {
 }
 
 type Cursor struct {
+	NextBatch []interface{} `json:"nextBatch,omitempty" bson:"nextBatch,omitempty"`
+}
+
+type FindCursor struct {
 	NS         string        `json:"ns" bson:"ns"`
 	Id         uint64        `json:"id" bson:"id"`
-	FirstBatch []interface{} `json:"firstBatch,omitempty" bson:"firstBatch,omitempty"`
-	NextBatch  []interface{} `json:"nextBatch,omitempty" bson:"nextBatch,omitempty"`
+	FirstBatch []interface{} `json:"firstBatch" bson:"firstBatch"`
 }
 
 type FindResponse struct {
-	Cursor Cursor `json:"cursor" bson:"cursor"`
-	Ok     bool   `json:"ok" bson:"ok"`
+	Cursor FindCursor `json:"cursor" bson:"cursor"`
+	Ok     bool       `json:"ok" bson:"ok"`
 }
 
 func (r *FindResponse) ToOp(from protocol.Op) (protocol.Op, error) {
@@ -366,9 +395,9 @@ type Delete struct {
 	Collection string        `json:"delete" bson:"delete"`
 	Deletes    []interface{} `json:"deletes" bson:"deletes"`
 
+	// TODO(ajwerner): figure out how to plumb in the database for delete commands
 	// TODO(ajwerner): consider caring about "ordered"
 	// TODO(ajwerner): consider caring about "lsid"
-
 }
 
 func (c *Delete) Visit(ctx context.Context, v Visitor) (Response, error) {
@@ -385,6 +414,30 @@ func (r *DeleteResponse) ToOp(from protocol.Op) (protocol.Op, error) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Update
+////////////////////////////////////////////////////////////////////////////////
+
+type Update struct {
+	GlobalOptions `bson:",inline"`
+	DB            string                   `json:"$db" bson:"$db"`
+	Collection    string                   `json:"update" bson:"update"`
+	Documents     []map[string]interface{} `json:"documents" bson:"documents"`
+}
+
+func (c *Update) Visit(ctx context.Context, v Visitor) (Response, error) {
+	return v.VisitUpdate(ctx, c)
+}
+
+type UpdateResponse struct {
+	N  int  `json:"n" bson:"n"`
+	Ok bool `json:"ok" bson:"ok"`
+}
+
+func (r *UpdateResponse) ToOp(from protocol.Op) (protocol.Op, error) {
+	return simpleToOp(from, r)
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Errors
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -396,6 +449,7 @@ type ErrorCode int
 
 // ErrorCodes are being added as needed.
 const (
+	BadValue             ErrorCode = 2
 	NoReplicationEnabled ErrorCode = 76
 )
 
@@ -406,16 +460,16 @@ type ErrorResponse struct {
 	CodeName string    `json:"codeName" bson:"codeName"`
 }
 
-func (r *ErrorResponse) Error() string {
-	return fmt.Sprintf("[%v %v] %v", r.CodeName, r.Code, r.ErrMsg)
-}
-
-func NewErrorResponse(code ErrorCode, err error) *ErrorResponse {
+func NewErrorResponse(code ErrorCode, format string, args ...interface{}) *ErrorResponse {
 	return &ErrorResponse{
+		ErrMsg:   fmt.Sprintf(format, args...),
 		Code:     code,
 		CodeName: code.String(),
-		ErrMsg:   err.Error(),
 	}
+}
+
+func (r *ErrorResponse) Error() string {
+	return fmt.Sprintf("[%v %v] %v", r.CodeName, r.Code, r.ErrMsg)
 }
 
 func (r *ErrorResponse) ToOp(from protocol.Op) (protocol.Op, error) {

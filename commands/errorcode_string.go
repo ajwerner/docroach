@@ -4,14 +4,18 @@ package commands
 
 import "strconv"
 
-const _ErrorCode_name = "NoReplicationEnabled"
-
-var _ErrorCode_index = [...]uint8{0, 20}
+const (
+	_ErrorCode_name_0 = "BadValue"
+	_ErrorCode_name_1 = "NoReplicationEnabled"
+)
 
 func (i ErrorCode) String() string {
-	i -= 76
-	if i < 0 || i >= ErrorCode(len(_ErrorCode_index)-1) {
-		return "ErrorCode(" + strconv.FormatInt(int64(i+76), 10) + ")"
+	switch {
+	case i == 2:
+		return _ErrorCode_name_0
+	case i == 76:
+		return _ErrorCode_name_1
+	default:
+		return "ErrorCode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _ErrorCode_name[_ErrorCode_index[i]:_ErrorCode_index[i+1]]
 }

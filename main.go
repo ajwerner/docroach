@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"log"
 
 	"github.com/ajwerner/docroach/server"
 	"github.com/golang/glog"
@@ -27,6 +26,6 @@ func main() {
 	glog.Infof("Listening on %v", *listenAddr)
 	s := server.New(*listenAddr, dbConns)
 	if err := s.ListenAndServe(); err != nil {
-		log.Fatal("failed to run server: ", err)
+		glog.Fatalf("failed to run server: ", err)
 	}
 }
